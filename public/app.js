@@ -1016,7 +1016,7 @@ function showInvoicePrintout(invoice) {
     // Automatically open modal and print dialog
     showModal(invoiceModal);
     setTimeout(() => {
-        // window.print();
+        window.print();
     }, 500);
 }
 
