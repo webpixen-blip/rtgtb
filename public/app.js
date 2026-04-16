@@ -85,8 +85,10 @@ function checkAuth() {
         document.getElementById('business-name-display').textContent = currentBusiness;
         
         if (currentRole === 'admin') {
+            document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'block');
             document.getElementById('nav-item-admin').style.display = 'block';
         } else {
+            document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
             document.getElementById('nav-item-admin').style.display = 'none';
         }
         
@@ -115,7 +117,9 @@ async function fetchAuth(url, options = {}) {
 
 // ==== STATE ====
 let products = [];
+let customers = []; // Global customer list
 let currentBill = [];
+let currentPaymentMethod = 'Cash';
 let currentTab = 'dashboard-view';
 let chartInstance = null;
 let currentProductImageBase64 = null;
@@ -129,6 +133,7 @@ const modalOverlay = document.getElementById('modal-overlay');
 const productModal = document.getElementById('product-modal');
 const invoiceModal = document.getElementById('invoice-modal');
 const adminUserModal = document.getElementById('admin-user-modal');
+const customerModal = document.getElementById('customer-modal');
 
 const mobileMenuBtn = document.getElementById('mobile-menu-btn');
 const sidebar = document.getElementById('sidebar');
@@ -142,6 +147,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     setupNavigation();
     setupModals();
+    setupBarcodeScanner(); // Initialize scanner listener
     
     // Mobile sidebar toggle
     if (mobileMenuBtn && sidebar && sidebarOverlay) {
@@ -152,6 +158,15 @@ document.addEventListener('DOMContentLoaded', () => {
         sidebarOverlay.addEventListener('click', () => {
             sidebar.classList.remove('show-sidebar');
             sidebarOverlay.classList.remove('active');
+        });
+    }
+
+    // Register Service Worker for PWA
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').then((registration) => {
+            console.log('Service Worker registered with scope:', registration.scope);
+        }).catch((error) => {
+            console.log('Service Worker registration failed:', error);
         });
     }
 });
@@ -217,6 +232,7 @@ function setupModals() {
     document.getElementById('btn-close-modal').addEventListener('click', hideModal);
     document.getElementById('btn-close-invoice-modal').addEventListener('click', hideModal);
     document.getElementById('btn-close-admin-modal').addEventListener('click', hideModal);
+    document.getElementById('btn-close-customer-modal').addEventListener('click', hideModal);
     
     // Add product
     document.getElementById('btn-add-product').addEventListener('click', () => {
@@ -276,11 +292,17 @@ function setupModals() {
         const name = document.getElementById('product-name').value;
         const qty = document.getElementById('product-qty').value;
         const price = document.getElementById('product-price').value;
+        const costPrice = document.getElementById('product-cost-price').value;
+        const barcode = document.getElementById('product-barcode').value;
+        const expiryDate = document.getElementById('product-expiry').value;
         
         const payload = { 
             name, 
             quantity: parseInt(qty), 
             price: parseFloat(price),
+            cost_price: parseFloat(costPrice) || 0,
+            barcode: barcode || '',
+            expiry_date: expiryDate || '',
             image: currentProductImageBase64
         };
         const method = id ? 'PUT' : 'POST';
@@ -333,6 +355,46 @@ function setupModals() {
             alert('Error updating user');
         }
     });
+
+    // Customer Form
+    document.getElementById('customer-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const name = document.getElementById('customer-name').value;
+        const phone = document.getElementById('customer-phone').value;
+        
+        try {
+            const res = await fetchAuth(`${API_BASE}/customers`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, phone })
+            });
+            if (!res.ok) throw new Error('Failed to save customer');
+            
+            hideModal();
+            loadCustomers(); // Reload customer list
+        } catch (err) {
+            console.error(err);
+            alert('Error saving customer');
+        }
+    });
+
+    document.getElementById('btn-add-customer').addEventListener('click', () => {
+        document.getElementById('customer-form').reset();
+        showModal(customerModal);
+    });
+
+    // Payment Method selection
+    document.querySelectorAll('.pay-method').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.pay-method').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentPaymentMethod = btn.dataset.method;
+        });
+    });
+
+    // Discount/Tax inputs trigger UI update
+    document.getElementById('pos-discount').addEventListener('input', updateBillUI);
+    document.getElementById('pos-tax-vat').addEventListener('input', updateBillUI);
 }
 
 function showModal(modal) {
@@ -384,6 +446,9 @@ function exportToCSV(filename, rows) {
 }
 
 // ==== DASHBOARD ====
+let bestSellersChart = null;
+let salesTrendsChart = null;
+
 async function loadDashboard() {
     if (!authToken) return;
     try {
@@ -391,11 +456,21 @@ async function loadDashboard() {
         const stats = await res.json();
         
         document.getElementById('dash-bills-today').textContent = stats.totalBillsToday;
-        document.getElementById('dash-bills-month').textContent = stats.totalBillsMonth;
         document.getElementById('dash-income-today').textContent = formatCurrency(stats.dailyIncome);
         document.getElementById('dash-income-month').textContent = formatCurrency(stats.monthlyIncome);
-        document.getElementById('dash-total-products').textContent = stats.totalProducts;
         document.getElementById('dash-low-stock').textContent = stats.lowStockProducts;
+
+        // Fetch Profits
+        const resProfit = await fetchAuth(`${API_BASE}/reports/profit`);
+        const profitData = await resProfit.json();
+        const today = new Date().toISOString().split('T')[0];
+        const currentMonth = today.slice(0, 7);
+        
+        const todayProfit = profitData.find(p => p.date === today)?.profit || 0;
+        const monthProfit = profitData.filter(p => p.date.startsWith(currentMonth)).reduce((s, p) => s + p.profit, 0);
+        
+        document.getElementById('dash-profit-today').textContent = formatCurrency(todayProfit);
+        document.getElementById('dash-profit-month').textContent = formatCurrency(monthProfit);
 
         // Load low stock table
         const resAlerts = await fetchAuth(`${API_BASE}/dashboard/low-stock`);
@@ -417,9 +492,69 @@ async function loadDashboard() {
             `;
             tbody.appendChild(tr);
         });
+
+        // Load Charts
+        loadBestSellersChart();
+        loadSalesTrendsChart();
     } catch (err) {
         console.error(err);
     }
+}
+
+async function loadBestSellersChart() {
+    try {
+        const res = await fetchAuth(`${API_BASE}/reports/product-sales`);
+        const data = await res.json();
+        const top5 = data.slice(0, 5);
+        
+        const ctx = document.getElementById('best-sellers-chart').getContext('2d');
+        if (bestSellersChart) bestSellersChart.destroy();
+        
+        bestSellersChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: top5.map(d => d.product_name),
+                datasets: [{
+                    label: 'Quantity Sold',
+                    data: top5.map(d => d.quantity_sold),
+                    backgroundColor: '#6366f1',
+                    borderRadius: 5
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } }
+            }
+        });
+    } catch (err) { console.error(err); }
+}
+
+async function loadSalesTrendsChart() {
+    try {
+        const res = await fetchAuth(`${API_BASE}/reports/trends`);
+        const data = await res.json();
+        
+        const ctx = document.getElementById('sales-trends-chart').getContext('2d');
+        if (salesTrendsChart) salesTrendsChart.destroy();
+        
+        salesTrendsChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: data.map(d => d.hour + ':00'),
+                datasets: [{
+                    label: 'Revenue',
+                    data: data.map(d => d.revenue),
+                    borderColor: '#10b981',
+                    fill: false,
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } }
+            }
+        });
+    } catch (err) { console.error(err); }
 }
 
 // ==== INVENTORY ====
@@ -495,6 +630,9 @@ function editProduct(id) {
         document.getElementById('product-name').value = p.name;
         document.getElementById('product-qty').value = p.quantity;
         document.getElementById('product-price').value = p.price;
+        document.getElementById('product-cost-price').value = p.cost_price || '';
+        document.getElementById('product-barcode').value = p.barcode || '';
+        document.getElementById('product-expiry').value = p.expiry_date || '';
         
         currentProductImageBase64 = p.image || null;
         if (p.image) {
@@ -526,6 +664,13 @@ document.getElementById('btn-export-inventory').addEventListener('click', () => 
 // ==== POS (NEW BILL) ====
 async function loadPOS() {
     currentBill = [];
+    currentPaymentMethod = 'Cash';
+    document.querySelectorAll('.pay-method').forEach(b => b.classList.remove('active'));
+    document.querySelector('.pay-method[data-method="Cash"]').classList.add('active');
+    
+    document.getElementById('pos-discount').value = 0;
+    document.getElementById('pos-tax-vat').value = 0;
+    
     updateBillUI();
     document.getElementById('pos-search-input').value = '';
     
@@ -533,8 +678,74 @@ async function loadPOS() {
         const res = await fetchAuth(`${API_BASE}/products`);
         products = await res.json();
         renderPOSProducts(products);
+        loadCustomers(); // Load and populate customers
     } catch (err) {
         console.error(err);
+    }
+}
+
+async function loadCustomers() {
+    try {
+        const res = await fetchAuth(`${API_BASE}/customers`);
+        customers = await res.json();
+        const select = document.getElementById('pos-customer-select');
+        const currentVal = select.value;
+        select.innerHTML = '<option value="">Guest Customer</option>';
+        customers.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c.id || c._id;
+            opt.textContent = `${c.name} (${c.phone})`;
+            select.appendChild(opt);
+        });
+        select.value = currentVal;
+    } catch (err) { console.error(err); }
+}
+
+document.getElementById('pos-customer-select').addEventListener('change', (e) => {
+    const custId = e.target.value;
+    const info = document.getElementById('customer-loyalty-info');
+    if (custId) {
+        const cust = customers.find(c => (c.id || c._id) === custId);
+        if (cust) {
+            document.getElementById('customer-points').textContent = cust.loyalty_points;
+            info.style.display = 'block';
+        }
+    } else {
+        info.style.display = 'none';
+    }
+});
+
+function setupBarcodeScanner() {
+    let barcode = '';
+    let lastTime = 0;
+
+    window.addEventListener('keydown', (e) => {
+        const currentTime = new Date().getTime();
+        
+        // Typical barcode scanners send characters very quickly (less than 30ms apart)
+        if (currentTime - lastTime > 100) {
+            barcode = '';
+        }
+
+        if (e.key === 'Enter') {
+            if (barcode.length > 2 && currentTab === 'pos-view') {
+                handleBarcodeScan(barcode);
+                barcode = '';
+            }
+        } else if (e.key.length === 1) {
+            barcode += e.key;
+        }
+
+        lastTime = currentTime;
+    });
+}
+
+function handleBarcodeScan(code) {
+    const product = products.find(p => p.barcode === code);
+    if (product) {
+        addToBill(product);
+    } else {
+        console.log('Product not found for barcode:', code);
     }
 }
 
@@ -606,11 +817,11 @@ function updateBillQuantity(id, change) {
 function updateBillUI() {
     const itemsContainer = document.getElementById('pos-bill-items');
     itemsContainer.innerHTML = '';
-    let total = 0;
+    let subtotal = 0;
     
     currentBill.forEach(item => {
         const amount = item.price * item.quantity;
-        total += amount;
+        subtotal += amount;
         
         const div = document.createElement('div');
         div.className = 'bill-item';
@@ -631,6 +842,13 @@ function updateBillUI() {
         itemsContainer.appendChild(div);
     });
     
+    const discount = parseFloat(document.getElementById('pos-discount').value) || 0;
+    const vatPercent = parseFloat(document.getElementById('pos-tax-vat').value) || 0;
+    
+    const taxVat = (subtotal - discount) * (vatPercent / 100);
+    const total = subtotal - discount + taxVat;
+    
+    document.getElementById('pos-subtotal').textContent = formatCurrency(subtotal);
     document.getElementById('pos-total-amount').textContent = formatCurrency(total);
 }
 
@@ -640,11 +858,19 @@ document.getElementById('btn-submit-bill').addEventListener('click', async () =>
         return;
     }
     
-    let total = currentBill.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const subtotal = currentBill.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const discount = parseFloat(document.getElementById('pos-discount').value) || 0;
+    const vatPercent = parseFloat(document.getElementById('pos-tax-vat').value) || 0;
+    const taxVat = (subtotal - discount) * (vatPercent / 100);
+    const total = subtotal - discount + taxVat;
     
     const payload = {
         items: currentBill,
-        total_amount: total
+        total_amount: total,
+        payment_method: currentPaymentMethod,
+        discount_total: discount,
+        tax_vat: taxVat,
+        customer_id: document.getElementById('pos-customer-select').value || null
     };
     
     try {
@@ -655,24 +881,77 @@ document.getElementById('btn-submit-bill').addEventListener('click', async () =>
         });
         
         if (!res.ok) throw new Error('Failed to create invoice');
-        
         const data = await res.json();
-        
-        // Print
-        showInvoicePrintout(data.invoice);
-        
-        // Clear bill
+        showInvoicePrintout({ ...data.invoice, payment_method: currentPaymentMethod, discount_total: discount, tax_vat: taxVat });
+    } catch (err) {
+        console.warn('Network error, saving invoice locally for sync:', err);
+        saveInvoiceOffline(payload);
+        // Show a local version of the receipt
+        const offlineInvoice = {
+            ...payload,
+            invoice_number: 'OFF-' + Date.now().toString().slice(-6),
+            date: new Date().toISOString().split('T')[0],
+            time: new Date().toTimeString().split(' ')[0].substring(0, 5)
+        };
+        showInvoicePrintout(offlineInvoice);
+        alert('Saved offline. Will sync when internet is back.');
+    } finally {
+        // Clear bill anyway
         currentBill = [];
         updateBillUI();
-        
-        // Reload products cache
-        fetchAuth(`${API_BASE}/products`).then(r => r.json()).then(p => products = p);
-        
-    } catch (err) {
-        console.error(err);
-        alert('Error saving bill');
+        // Reload products cache if possible
+        fetchAuth(`${API_BASE}/products`).then(r => r.json()).then(p => products = p).catch(() => {});
     }
 });
+
+function saveInvoiceOffline(payload) {
+    const offlineInvoices = JSON.parse(localStorage.getItem('pos_offline_invoices') || '[]');
+    offlineInvoices.push(payload);
+    localStorage.setItem('pos_offline_invoices', JSON.stringify(offlineInvoices));
+    updateSyncIndicator();
+}
+
+async function syncOfflineInvoices() {
+    const offlineInvoices = JSON.parse(localStorage.getItem('pos_offline_invoices') || '[]');
+    if (offlineInvoices.length === 0) return;
+
+    document.getElementById('sync-status').style.display = 'flex';
+    
+    const remaining = [];
+    for (const inv of offlineInvoices) {
+        try {
+            const res = await fetchAuth(`${API_BASE}/invoices`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(inv)
+            });
+            if (!res.ok) throw new Error();
+        } catch (err) {
+            remaining.push(inv);
+        }
+    }
+
+    localStorage.setItem('pos_offline_invoices', JSON.stringify(remaining));
+    updateSyncIndicator();
+    
+    if (remaining.length === 0) {
+        setTimeout(() => {
+            document.getElementById('sync-status').style.display = 'none';
+        }, 3000);
+    }
+}
+
+function updateSyncIndicator() {
+    const offlineInvoices = JSON.parse(localStorage.getItem('pos_offline_invoices') || '[]');
+    const indicator = document.getElementById('sync-status');
+    if (offlineInvoices.length > 0) {
+        indicator.style.display = 'flex';
+        indicator.innerHTML = `<i class='bx bx-sync bx-spin'></i> Syncing ${offlineInvoices.length} bills...`;
+    }
+}
+
+window.addEventListener('online', syncOfflineInvoices);
+setInterval(syncOfflineInvoices, 30000); // Check every 30s
 
 function showInvoicePrintout(invoice) {
     document.getElementById('receipt-no').textContent = invoice.invoice_number;
@@ -682,10 +961,10 @@ function showInvoicePrintout(invoice) {
     const tbody = document.querySelector('#receipt-items tbody');
     tbody.innerHTML = '';
     
-    let total = 0;
+    let subtotal = 0;
     invoice.items.forEach(item => {
         const amt = item.price * item.quantity;
-        total += amt;
+        subtotal += amt;
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td>${item.product_name || item.name}</td>
@@ -696,12 +975,48 @@ function showInvoicePrintout(invoice) {
         tbody.appendChild(tr);
     });
     
-    document.getElementById('receipt-total-amount').textContent = total.toFixed(2);
+    const receiptExtra = document.createElement('div');
+    receiptExtra.innerHTML = `
+        <p>----------------------------</p>
+        <div style="display:flex; justify-content:space-between;"><span>Subtotal:</span><span>${subtotal.toFixed(2)}</span></div>
+        <div style="display:flex; justify-content:space-between;"><span>Discount:</span><span>-${(invoice.discount_total || 0).toFixed(2)}</span></div>
+        <div style="display:flex; justify-content:space-between;"><span>VAT:</span><span>+${(invoice.tax_vat || 0).toFixed(2)}</span></div>
+        <div style="display:flex; justify-content:space-between;"><span>Pay Method:</span><span>${invoice.payment_method || 'Cash'}</span></div>
+    `;
     
-    // Automatically open modal and print dialog as per rules
+    const existingExtra = document.getElementById('receipt-extra-info');
+    if (existingExtra) existingExtra.remove();
+    receiptExtra.id = 'receipt-extra-info';
+    document.querySelector('.receipt-total').before(receiptExtra);
+
+    document.getElementById('receipt-total-amount').textContent = invoice.total_amount.toFixed(2);
+    
+    // Add Share buttons to modal footer
+    const footer = document.querySelector('#invoice-modal .modal-footer');
+    const existingShare = document.getElementById('share-buttons');
+    if (existingShare) existingShare.remove();
+    
+    const shareDiv = document.createElement('div');
+    shareDiv.id = 'share-buttons';
+    shareDiv.style.marginTop = '10px';
+    shareDiv.style.display = 'flex';
+    shareDiv.style.gap = '10px';
+    
+    const waBtn = document.createElement('button');
+    waBtn.className = 'btn btn-outline btn-block';
+    waBtn.innerHTML = '<i class="bx bxl-whatsapp"></i> Share WhatsApp';
+    waBtn.onclick = () => {
+        const text = `Invoice: ${invoice.invoice_number}\nDate: ${invoice.date}\nTotal: ${invoice.total_amount}\nThank you for shopping with ${currentBusiness}!`;
+        window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+    };
+    
+    shareDiv.appendChild(waBtn);
+    footer.appendChild(shareDiv);
+
+    // Automatically open modal and print dialog
     showModal(invoiceModal);
     setTimeout(() => {
-        window.print();
+        // window.print();
     }, 500);
 }
 

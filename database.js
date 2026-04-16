@@ -54,6 +54,9 @@ const ProductSchema = new mongoose.Schema({
     name: { type: String, required: true },
     quantity: { type: Number, default: 0 },
     price: { type: Number, default: 0.0 },
+    cost_price: { type: Number, default: 0.0 }, // Added for profit calculation
+    barcode: { type: String }, // Added for scanner integration
+    expiry_date: { type: String }, // Added for tracking (YYYY-MM-DD)
     image: { type: String }
 });
 
@@ -61,6 +64,7 @@ const InvoiceItemSchema = new mongoose.Schema({
     product_name: { type: String, required: true },
     quantity: { type: Number, required: true },
     price: { type: Number, required: true },
+    discount: { type: Number, default: 0 }, // Item-wise discount
     subtotal: { type: Number, required: true }
 });
 
@@ -70,13 +74,36 @@ const InvoiceSchema = new mongoose.Schema({
     date: { type: String, required: true }, // Format: YYYY-MM-DD
     time: { type: String, required: true }, // Format: HH:MM
     total_amount: { type: Number, default: 0.0 },
+    payment_method: { type: String, default: 'Cash' }, // Cash, Card, QR, Credit
+    discount_total: { type: Number, default: 0.0 },
+    tax_vat: { type: Number, default: 0.0 },
+    tax_nbt: { type: Number, default: 0.0 },
+    customer_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
     items: [InvoiceItemSchema]
+});
+
+const CustomerSchema = new mongoose.Schema({
+    user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    name: { type: String, required: true },
+    phone: { type: String, required: true },
+    loyalty_points: { type: Number, default: 0 }
+});
+
+const StockLogSchema = new mongoose.Schema({
+    user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    product_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+    product_name: { type: String },
+    action: { type: String, required: true }, // 'IN' or 'OUT'
+    quantity: { type: Number, required: true },
+    timestamp: { type: Date, default: Date.now }
 });
 
 // -- MODELS --
 const User = mongoose.model('User', UserSchema);
 const Product = mongoose.model('Product', ProductSchema);
 const Invoice = mongoose.model('Invoice', InvoiceSchema);
+const Customer = mongoose.model('Customer', CustomerSchema);
+const StockLog = mongoose.model('StockLog', StockLogSchema);
 
 // Create default admin user
 const initializeDatabase = async () => {
@@ -110,5 +137,7 @@ module.exports = {
     initializeDatabase,
     User,
     Product,
-    Invoice
+    Invoice,
+    Customer,
+    StockLog
 };

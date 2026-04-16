@@ -3,7 +3,7 @@ const cors = require('cors');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const { encrypt } = require('./utils/encryption');
-const { connectDB, initializeDatabase, User, Product, Invoice } = require('./database');
+const { connectDB, initializeDatabase, User, Product, Invoice, Customer, StockLog } = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -136,6 +136,14 @@ const adminMiddleware = (req, res, next) => {
     }
 };
 
+const staffMiddleware = (req, res, next) => {
+    if (req.user && (req.user.role === 'admin' || req.user.role === 'staff' || req.user.role === 'user')) {
+        next();
+    } else {
+        res.status(403).json({ error: 'Forbidden' });
+    }
+};
+
 app.get('/api/admin/users', adminMiddleware, async (req, res) => {
     try {
         const users = await User.find({ role: { $ne: 'admin' } }).select('-password');
@@ -214,7 +222,7 @@ app.get('/api/dashboard', async (req, res) => {
 
         // Product Stats
         const totalProducts = await Product.countDocuments(queryFilter);
-        const lowStockProducts = await Product.countDocuments({ ...queryFilter, quantity: { $lte: 10 } });
+        const lowStockProducts = await Product.countDocuments({ ...queryFilter, quantity: { $lte: 5 } });
 
         res.json({
             totalBillsToday,
@@ -232,7 +240,7 @@ app.get('/api/dashboard', async (req, res) => {
 app.get('/api/dashboard/low-stock', async (req, res) => {
     try {
         const queryFilter = req.user.role === 'admin' ? {} : { user_id: req.user._id };
-        const products = await Product.find({ ...queryFilter, quantity: { $lte: 10 } })
+        const products = await Product.find({ ...queryFilter, quantity: { $lte: 5 } })
             .populate('user_id', 'business_name')
             .sort({ quantity: 1 })
             .limit(10);
@@ -266,6 +274,9 @@ app.get('/api/products', async (req, res) => {
             name: p.name,
             quantity: p.quantity,
             price: p.price,
+            cost_price: p.cost_price,
+            barcode: p.barcode,
+            expiry_date: p.expiry_date,
             image: p.image,
             owner_name: p.user_id ? p.user_id.business_name : 'Unknown'
         }));
@@ -277,7 +288,7 @@ app.get('/api/products', async (req, res) => {
 });
 
 app.post('/api/products', async (req, res) => {
-    const { name, quantity, price, image } = req.body;
+    const { name, quantity, price, cost_price, barcode, expiry_date, image } = req.body;
     if (!name || quantity === undefined || price === undefined) {
         return res.status(400).json({ error: 'Missing required fields' });
     }
@@ -288,8 +299,23 @@ app.post('/api/products', async (req, res) => {
             name,
             quantity,
             price,
+            cost_price,
+            barcode,
+            expiry_date,
             image
         });
+
+        // Log initial stock as 'IN'
+        if (quantity > 0) {
+            await StockLog.create({
+                user_id: req.user._id,
+                product_id: product._id,
+                product_name: name,
+                action: 'IN',
+                quantity: quantity
+            });
+        }
+
         res.status(201).json({ id: product._id.toString(), name, quantity, price, image });
     } catch (err) {
         return res.status(500).json({ error: err.message });
@@ -297,15 +323,32 @@ app.post('/api/products', async (req, res) => {
 });
 
 app.put('/api/products/:id', async (req, res) => {
-    const { name, quantity, price, image } = req.body;
+    const { name, quantity, price, cost_price, barcode, expiry_date, image } = req.body;
     try {
         const queryFilter = req.user.role === 'admin' ? { _id: req.params.id } : { _id: req.params.id, user_id: req.user._id };
+        
+        // Find old product to compare quantity for logging
+        const oldProduct = await Product.findOne(queryFilter);
+        if (!oldProduct) return res.status(404).json({ error: 'Product not found' });
+
+        const qtyDiff = quantity - oldProduct.quantity;
+        
         const product = await Product.findOneAndUpdate(
             queryFilter,
-            { name, quantity, price, image },
+            { name, quantity, price, cost_price, barcode, expiry_date, image },
             { new: true }
         );
-        if (!product) return res.status(404).json({ error: 'Product not found' });
+
+        if (qtyDiff !== 0) {
+            await StockLog.create({
+                user_id: req.user._id,
+                product_id: product._id,
+                product_name: name || product.name,
+                action: qtyDiff > 0 ? 'IN' : 'OUT',
+                quantity: Math.abs(qtyDiff)
+            });
+        }
+
         res.json({ message: 'Product updated successfully' });
     } catch (err) {
         return res.status(500).json({ error: err.message });
@@ -383,7 +426,7 @@ app.get('/api/invoices/:id', async (req, res) => {
 });
 
 app.post('/api/invoices', async (req, res) => {
-    const { items, total_amount } = req.body;
+    const { items, total_amount, payment_method, discount_total, tax_vat, tax_nbt, customer_id } = req.body;
     if (!items || items.length === 0 || !total_amount) {
         return res.status(400).json({ error: 'Invalid invoice data' });
     }
@@ -397,12 +440,10 @@ app.post('/api/invoices', async (req, res) => {
         product_name: item.name,
         quantity: item.quantity,
         price: item.price,
-        subtotal: item.quantity * item.price
+        discount: item.discount || 0,
+        subtotal: (item.quantity * item.price) - (item.discount || 0)
     }));
 
-    // We can use a MongoDB transaction if it's a replica set, 
-    // but typically Atlas free tier supports them. 
-    // Standard Mongoose write:
     try {
         const invoice = await Invoice.create({
             user_id: req.user._id,
@@ -410,15 +451,35 @@ app.post('/api/invoices', async (req, res) => {
             date,
             time,
             total_amount,
+            payment_method: payment_method || 'Cash',
+            discount_total: discount_total || 0,
+            tax_vat: tax_vat || 0,
+            tax_nbt: tax_nbt || 0,
+            customer_id: customer_id || null,
             items: formattedItems
         });
         
-        // Update product stock manually in series or parallel
+        // Update product stock and log outgoing stock
         for (const item of items) {
-            await Product.findOneAndUpdate(
+            const product = await Product.findOneAndUpdate(
                 { name: item.name, user_id: req.user._id },
-                { $inc: { quantity: -item.quantity } }
+                { $inc: { quantity: -item.quantity } },
+                { new: true }
             );
+
+            await StockLog.create({
+                user_id: req.user._id,
+                product_id: product ? product._id : null,
+                product_name: item.name,
+                action: 'OUT',
+                quantity: item.quantity
+            });
+        }
+
+        // Update customer loyalty points (1 point per 100 Rs spent, for example)
+        if (customer_id) {
+            const pointsToAdd = Math.floor(total_amount / 100);
+            await Customer.findByIdAndUpdate(customer_id, { $inc: { loyalty_points: pointsToAdd } });
         }
 
         res.status(201).json({ 
@@ -528,6 +589,121 @@ app.get('/api/public/store/:business_name', async (req, res) => {
             whatsapp_number: storeOwner.whatsapp_number,
             products: mappedProducts
         });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// ==== CRM API ====
+
+app.get('/api/customers', async (req, res) => {
+    try {
+        const queryFilter = req.user.role === 'admin' ? {} : { user_id: req.user._id };
+        const customers = await Customer.find(queryFilter).sort({ name: 1 });
+        res.json(customers);
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/customers', async (req, res) => {
+    const { name, phone } = req.body;
+    if (!name || !phone) return res.status(400).json({ error: 'Name and Phone are required' });
+    
+    try {
+        const customer = await Customer.create({
+            user_id: req.user._id,
+            name,
+            phone
+        });
+        res.status(201).json(customer);
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// ==== EXTENDED REPORTS API ====
+
+app.get('/api/reports/stock-logs', async (req, res) => {
+    try {
+        const queryFilter = req.user.role === 'admin' ? {} : { user_id: req.user._id };
+        const logs = await StockLog.find(queryFilter).sort({ timestamp: -1 }).limit(100);
+        res.json(logs);
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/reports/profit', async (req, res) => {
+    try {
+        const queryMatch = req.user.role === 'admin' ? {} : { user_id: req.user._id };
+        
+        // We need to match invoices, unwind items, then join with products to get cost_price
+        // Or simpler: include current cost_price in InvoiceItem if we want historical accuracy.
+        // For now, we'll use current cost_price from Product.
+        
+        const result = await Invoice.aggregate([
+            { $match: queryMatch },
+            { $unwind: "$items" },
+            {
+                $lookup: {
+                    from: "products",
+                    let: { prodName: "$items.product_name", userId: "$user_id" },
+                    pipeline: [
+                        { $match: { $expr: { $and: [ { $eq: ["$name", "$$prodName"] }, { $eq: ["$user_id", "$$userId"] } ] } } }
+                    ],
+                    as: "productInfo"
+                }
+            },
+            { $unwind: "$productInfo" },
+            {
+                $group: {
+                    _id: "$date",
+                    revenue: { $sum: "$items.subtotal" },
+                    cost: { $sum: { $multiply: ["$items.quantity", "$productInfo.cost_price"] } }
+                }
+            },
+            {
+                $project: {
+                    date: "$_id",
+                    revenue: 1,
+                    cost: 1,
+                    profit: { $subtract: ["$revenue", "$cost"] },
+                    _id: 0
+                }
+            },
+            { $sort: { date: -1 } }
+        ]);
+        
+        res.json(result);
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/reports/trends', async (req, res) => {
+    try {
+        const queryMatch = req.user.role === 'admin' ? {} : { user_id: req.user._id };
+        const result = await Invoice.aggregate([
+            { $match: queryMatch },
+            {
+                $group: {
+                    _id: { $substr: ["$time", 0, 2] }, // Group by hour (HH)
+                    sales_count: { $sum: 1 },
+                    revenue: { $sum: "$total_amount" }
+                }
+            },
+            {
+                $project: {
+                    hour: "$_id",
+                    sales_count: 1,
+                    revenue: 1,
+                    _id: 0
+                }
+            },
+            { $sort: { hour: 1 } }
+        ]);
+        res.json(result);
     } catch (err) {
         return res.status(500).json({ error: err.message });
     }
