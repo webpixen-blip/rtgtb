@@ -519,7 +519,8 @@ async function loadBestSellersChart() {
         if (bestSellersChart) bestSellersChart.destroy();
         
         if (typeof Chart === 'undefined') {
-            console.error('Chart.js is not loaded!');
+            console.error('Chart.js is not loaded! Retrying in 1s...');
+            setTimeout(loadBestSellersChart, 1000);
             return;
         }
 
@@ -560,7 +561,8 @@ async function loadSalesTrendsChart() {
         if (salesTrendsChart) salesTrendsChart.destroy();
         
         if (typeof Chart === 'undefined') {
-            console.error('Chart.js is not loaded!');
+            console.error('Chart.js is not loaded! Retrying in 1s...');
+            setTimeout(loadSalesTrendsChart, 1000);
             return;
         }
 
@@ -982,6 +984,7 @@ window.addEventListener('online', syncOfflineInvoices);
 setInterval(syncOfflineInvoices, 30000); // Check every 30s
 
 function showInvoicePrintout(invoice) {
+    document.getElementById('receipt-business-name').textContent = currentBusiness.toUpperCase() || 'SHAMOD POS';
     document.getElementById('receipt-no').textContent = invoice.invoice_number;
     document.getElementById('receipt-date').textContent = invoice.date;
     document.getElementById('receipt-time').textContent = invoice.time;
