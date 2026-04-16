@@ -658,8 +658,10 @@ app.get('/api/reports/product-sales', async (req, res) => {
             { $sort: { quantity_sold: -1 } },
             { $limit: 10 }
         ]);
+        console.log(`Product Sales Report for ${req.user.business_name}: ${result.length} items found`);
         res.json(result);
     } catch (err) {
+        console.error('Product Sales Aggregation Error:', err);
         return res.status(500).json({ error: err.message });
     }
 });
@@ -733,8 +735,10 @@ app.get('/api/reports/trends', async (req, res) => {
             },
             { $sort: { hour: 1 } }
         ]);
+        console.log(`Sales Trends Report for ${req.user.business_name}: ${result.length} data points found`);
         res.json(result);
     } catch (err) {
+        console.error('Trends Aggregation Error:', err);
         return res.status(500).json({ error: err.message });
     }
 });

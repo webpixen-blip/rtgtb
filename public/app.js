@@ -505,11 +505,24 @@ async function loadBestSellersChart() {
     try {
         const res = await fetchAuth(`${API_BASE}/reports/product-sales`);
         const data = await res.json();
-        const top5 = data.slice(0, 5);
+        console.log('Best Sellers Data:', data);
         
-        const ctx = document.getElementById('best-sellers-chart').getContext('2d');
+        const top5 = data.slice(0, 5);
+        if (top5.length === 0) {
+            console.log('No best sellers data found for charts.');
+            return;
+        }
+        
+        const chartEl = document.getElementById('best-sellers-chart');
+        if (!chartEl) return;
+        const ctx = chartEl.getContext('2d');
         if (bestSellersChart) bestSellersChart.destroy();
         
+        if (typeof Chart === 'undefined') {
+            console.error('Chart.js is not loaded!');
+            return;
+        }
+
         bestSellersChart = new Chart(ctx, {
             type: 'bar',
             data: {
@@ -523,20 +536,34 @@ async function loadBestSellersChart() {
             },
             options: {
                 responsive: true,
+                maintainAspectRatio: false,
                 plugins: { legend: { display: false } }
             }
         });
-    } catch (err) { console.error(err); }
+    } catch (err) { console.error('Error loading Best Sellers Chart:', err); }
 }
 
 async function loadSalesTrendsChart() {
     try {
         const res = await fetchAuth(`${API_BASE}/reports/trends`);
         const data = await res.json();
+        console.log('Sales Trends Data:', data);
+
+        if (data.length === 0) {
+            console.log('No sales trends data found for charts.');
+            return;
+        }
         
-        const ctx = document.getElementById('sales-trends-chart').getContext('2d');
+        const chartEl = document.getElementById('sales-trends-chart');
+        if (!chartEl) return;
+        const ctx = chartEl.getContext('2d');
         if (salesTrendsChart) salesTrendsChart.destroy();
         
+        if (typeof Chart === 'undefined') {
+            console.error('Chart.js is not loaded!');
+            return;
+        }
+
         salesTrendsChart = new Chart(ctx, {
             type: 'line',
             data: {
@@ -551,10 +578,11 @@ async function loadSalesTrendsChart() {
             },
             options: {
                 responsive: true,
+                maintainAspectRatio: false,
                 plugins: { legend: { display: false } }
             }
         });
-    } catch (err) { console.error(err); }
+    } catch (err) { console.error('Error loading Sales Trends Chart:', err); }
 }
 
 // ==== INVENTORY ====
