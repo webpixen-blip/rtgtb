@@ -505,18 +505,9 @@ async function loadBestSellersChart() {
     try {
         const res = await fetchAuth(`${API_BASE}/reports/product-sales`);
         const data = await res.json();
-        console.log('Best Sellers Data:', data);
-        
-        const top5 = data.slice(0, 5);
-        if (top5.length === 0) {
-            console.log('No best sellers data found for charts.');
-            return;
-        }
-        
         const chartEl = document.getElementById('best-sellers-chart');
         if (!chartEl) return;
         const ctx = chartEl.getContext('2d');
-        if (bestSellersChart) bestSellersChart.destroy();
         
         if (typeof Chart === 'undefined') {
             console.error('Chart.js is not loaded! Retrying in 1s...');
@@ -524,6 +515,17 @@ async function loadBestSellersChart() {
             return;
         }
 
+        if (bestSellersChart) bestSellersChart.destroy();
+
+        if (data.length === 0) {
+            ctx.font = "14px Inter";
+            ctx.fillStyle = "#64748b";
+            ctx.textAlign = "center";
+            ctx.fillText("No sales data available yet.", chartEl.width / 2, chartEl.height / 2);
+            return;
+        }
+        
+        const top5 = data.slice(0, 5);
         bestSellersChart = new Chart(ctx, {
             type: 'bar',
             data: {
@@ -538,7 +540,11 @@ async function loadBestSellersChart() {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { display: false } }
+                plugins: { legend: { display: false } },
+                scales: {
+                    y: { beginAtZero: true, grid: { display: false } },
+                    x: { grid: { display: false } }
+                }
             }
         });
     } catch (err) { console.error('Error loading Best Sellers Chart:', err); }
@@ -548,24 +554,26 @@ async function loadSalesTrendsChart() {
     try {
         const res = await fetchAuth(`${API_BASE}/reports/trends`);
         const data = await res.json();
-        console.log('Sales Trends Data:', data);
-
-        if (data.length === 0) {
-            console.log('No sales trends data found for charts.');
-            return;
-        }
-        
         const chartEl = document.getElementById('sales-trends-chart');
         if (!chartEl) return;
         const ctx = chartEl.getContext('2d');
-        if (salesTrendsChart) salesTrendsChart.destroy();
-        
+
         if (typeof Chart === 'undefined') {
             console.error('Chart.js is not loaded! Retrying in 1s...');
             setTimeout(loadSalesTrendsChart, 1000);
             return;
         }
+        
+        if (salesTrendsChart) salesTrendsChart.destroy();
 
+        if (data.length === 0) {
+            ctx.font = "14px Inter";
+            ctx.fillStyle = "#64748b";
+            ctx.textAlign = "center";
+            ctx.fillText("Start selling to see trends!", chartEl.width / 2, chartEl.height / 2);
+            return;
+        }
+        
         salesTrendsChart = new Chart(ctx, {
             type: 'line',
             data: {
@@ -574,14 +582,19 @@ async function loadSalesTrendsChart() {
                     label: 'Revenue',
                     data: data.map(d => d.revenue),
                     borderColor: '#10b981',
-                    fill: false,
+                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                    fill: true,
                     tension: 0.4
                 }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { display: false } }
+                plugins: { legend: { display: false } },
+                scales: {
+                    y: { beginAtZero: true, grid: { color: '#f1f5f9' } },
+                    x: { grid: { display: false } }
+                }
             }
         });
     } catch (err) { console.error('Error loading Sales Trends Chart:', err); }

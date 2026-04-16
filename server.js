@@ -536,26 +536,6 @@ app.get('/api/reports/sales', async (req, res) => {
     }
 });
 
-app.get('/api/reports/product-sales', async (req, res) => {
-    try {
-        const queryMatch = req.user.role === 'admin' ? {} : { user_id: req.user._id };
-        const result = await Invoice.aggregate([
-            { $match: queryMatch },
-            { $unwind: "$items" },
-            { $group: { 
-                _id: "$items.product_name", 
-                quantity_sold: { $sum: "$items.quantity" },
-                revenue: { $sum: "$items.subtotal" }
-            }},
-            { $project: { product_name: "$_id", quantity_sold: 1, revenue: 1, _id: 0 } },
-            { $sort: { quantity_sold: -1 } }
-        ]);
-        res.json(result);
-    } catch (err) {
-        return res.status(500).json({ error: err.message });
-    }
-});
-
 // ==== MARKETPLACE API ====
 
 app.post('/api/marketplace/enable', async (req, res) => {
